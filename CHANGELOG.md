@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-09-22)
 
 - `Jev.Nx`: a `Jev.Backend` that answers from an in-process model behind an `Nx.Serving`.
 - `Jev.Nx.Model`: the behaviour a model implements, encode, batch, forward, decode, so
