@@ -1,0 +1,12 @@
+Jev.Nx
+Copyright 2026 Danila Poyarkov
+
+Licensed under the Apache License, Version 2.0.
+
+This package runs Laya, a decision model by Convai Innovations, published at
+https://huggingface.co/convaiinnovations/laya under the Apache License 2.0.
+Jev.Nx.Laya.Sequence and Jev.Nx.Laya.Head reimplement the sequence layout and
+decision head of Laya's reference implementation (rl_common.py) in Elixir.
+
+The Nx port of the decision head was informed by laya_ex by Christian
+Alexander, https://github.com/ChristianAlexander/laya_ex, Apache License 2.0.
