@@ -32,10 +32,12 @@ defmodule Jev.Nx.Serving do
       clipped to the model's maximum
     * `:option_slots` - option-count buckets, default `[4, 8, 16, 32, 64, 128]`
     * `:batch_size` - the maximum batch the serving runs; needed for `:compile`
-    * `:compile` - compile every shape when the serving starts, default `false`
+    * `:compile` - compile every shape for `:batch_size` when the serving
+      starts, and pad every batch to it, default `false`. Without it each
+      shape is compiled on first use for the batch sizes that actually occur
     * `:defn_options` - passed to `Nx.Defn.jit/2` and `Nx.Defn.compile/3`
-    * `:preallocate_params` - move parameters to the compiler's backend at
-      start, default `false`
+    * `:preallocate_params` - copy the parameters to the compiler's backend
+      when the serving starts, once, shared by every shape; default `false`
   """
 
   alias Jev.Wire
@@ -84,23 +86,28 @@ defmodule Jev.Nx.Serving do
     |> Nx.Serving.client_postprocessing(&postprocess(model, &1, &2))
   end
 
-  # One compiled program per batch key, built when the serving first sees it.
+  # Nx.Serving calls this in the serving process once per batch key at start.
+  # Parameters are moved to the compiler's backend once, on the first key, and
+  # shared by every key's program. Batches are padded to the batch size only
+  # when the programs were compiled for it.
   defp runner(model, {:shape, length, slot}, defn_options, batch_size, opts) do
     params = params(model, opts[:preallocate_params], defn_options)
     forward = compile(model, batch_size, length, slot, opts[:compile], defn_options)
 
     fn batch ->
-      batch = if batch_size, do: Nx.Batch.pad(batch, batch_size - batch.size), else: batch
+      batch = if opts[:compile], do: Nx.Batch.pad(batch, batch_size - batch.size), else: batch
       forward.(params, batch) |> Nx.backend_transfer(Nx.BinaryBackend)
     end
   end
 
-  defp params(%module{} = model, preallocate?, defn_options) do
-    params = module.params(model)
+  defp params(%module{} = model, false, _defn_options), do: module.params(model)
 
-    if preallocate? do
-      Nx.backend_copy(params, Nx.Defn.to_backend(defn_options))
-    else
+  defp params(%module{} = model, true, defn_options) do
+    key = {__MODULE__, :params, defn_options}
+
+    with nil <- Process.get(key) do
+      params = Nx.backend_copy(module.params(model), Nx.Defn.to_backend(defn_options))
+      Process.put(key, params)
       params
     end
   end
@@ -115,6 +122,8 @@ defmodule Jev.Nx.Serving do
     Nx.Defn.jit(module.forward(model), defn_options)
   end
 
+  # Runs in the caller's process. Tensors are built on the binary backend so
+  # callers never allocate on the accelerator; the serving moves the batch.
   defp preprocess(%module{} = model, {state, questions}, lengths, slots) do
     {names, items} =
       questions
@@ -124,11 +133,10 @@ defmodule Jev.Nx.Serving do
     length = bucket(lengths, items |> Enum.map(& &1.tokens) |> Enum.max())
     slot = bucket(slots, items |> Enum.map(& &1.options) |> Enum.max())
 
-    batch =
-      [module.batch(model, items, length, slot)]
-      |> Nx.Batch.concatenate()
-      |> Nx.Batch.key({:shape, length, slot})
+    inputs =
+      Nx.with_default_backend(Nx.BinaryBackend, fn -> module.batch(model, items, length, slot) end)
 
+    batch = [inputs] |> Nx.Batch.concatenate() |> Nx.Batch.key({:shape, length, slot})
     {batch, {names, items}}
   end
 
