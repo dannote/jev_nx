@@ -15,7 +15,20 @@ defmodule Jev.Nx.LayaTest do
   setup_all do
     dir = System.get_env("JEV_NX_LAYA_DIR", Path.expand("~/.cache/jev_nx/laya"))
     {:ok, model} = Laya.load(repository: {:local, dir})
-    %{laya: model, serving: Jev.Nx.Serving.build(model, sequence_length: [128, 512])}
+
+    onnx_dir = System.get_env("JEV_NX_LAYA_ONNX_DIR", Path.expand("~/.cache/jev_nx/laya-onnx"))
+
+    onnx =
+      if File.exists?(Path.join(onnx_dir, "laya.onnx")) do
+        {:ok, model} = Laya.load(runtime: :onnx, repository: {:local, onnx_dir})
+        Jev.Nx.Serving.build(model, sequence_length: [128, 512])
+      end
+
+    %{
+      laya: model,
+      serving: Jev.Nx.Serving.build(model, sequence_length: [128, 512]),
+      onnx: onnx
+    }
   end
 
   for %{"name" => name} = case <- @golden do
@@ -33,33 +46,41 @@ defmodule Jev.Nx.LayaTest do
     end
 
     test "#{name}: answers match the reference", %{serving: serving} do
-      questions = questions(@case["questions"])
-      wire = Nx.Serving.run(serving, {@case["state"], questions})
-
-      assert wire.model == "laya-english"
-      assert wire.usage.input_tokens == @case["input_tokens"]
-
-      for {qid, expected} <- @case["answers"] do
-        answer = wire.answers[qid]
-        assert answer.type == String.to_existing_atom(expected["type"])
-
-        case expected["type"] do
-          "choice" ->
-            assert answer.choice == expected["choice"]
-            assert_close(answer.probabilities, expected["probabilities"], qid)
-
-          "score" ->
-            assert_in_delta answer.score, expected["score"], 1.0e-4
-            assert_close(answer.probabilities, expected["probabilities"], qid)
-
-          "noul" ->
-            assert_in_delta answer.noul, expected["noul"], 1.0e-4
-        end
-      end
-
-      reply = Jev.reply(wire, questions)
-      assert is_map(reply.confidence)
+      assert_matches_reference(serving, @case)
     end
+
+    test "#{name}: the ONNX export answers the same", %{onnx: onnx} do
+      if onnx, do: assert_matches_reference(onnx, @case, 2.0e-3)
+    end
+  end
+
+  defp assert_matches_reference(serving, %{} = case_, tolerance \\ 1.0e-4) do
+    questions = questions(case_["questions"])
+    wire = Nx.Serving.run(serving, {case_["state"], questions})
+
+    assert wire.model == "laya-english"
+    assert wire.usage.input_tokens == case_["input_tokens"]
+
+    for {qid, expected} <- case_["answers"] do
+      answer = wire.answers[qid]
+      assert answer.type == String.to_existing_atom(expected["type"])
+
+      case expected["type"] do
+        "choice" ->
+          assert answer.choice == expected["choice"]
+          assert_close(answer.probabilities, expected["probabilities"], qid, tolerance)
+
+        "score" ->
+          assert_in_delta answer.score, expected["score"], tolerance
+          assert_close(answer.probabilities, expected["probabilities"], qid, tolerance)
+
+        "noul" ->
+          assert_in_delta answer.noul, expected["noul"], tolerance
+      end
+    end
+
+    reply = Jev.reply(wire, questions)
+    assert is_map(reply.confidence)
   end
 
   test "rejects a question whose options overflow the head", %{laya: model} do
@@ -96,11 +117,11 @@ defmodule Jev.Nx.LayaTest do
   defp instructions(%{"instructions" => text}) when is_binary(text), do: text
   defp instructions(%{"instructions" => map}), do: map
 
-  defp assert_close(actual, expected, qid) do
+  defp assert_close(actual, expected, qid, tolerance) do
     assert Map.keys(actual) |> Enum.sort() == Map.keys(expected) |> Enum.sort()
 
     for {label, p} <- expected do
-      assert_in_delta actual[label], p, 1.0e-4, "#{qid}/#{label}: #{actual[label]} vs #{p}"
+      assert_in_delta actual[label], p, tolerance, "#{qid}/#{label}: #{actual[label]} vs #{p}"
     end
   end
 end

@@ -40,7 +40,35 @@ def handle_answer(%{kind: k}, {_stage, from, _text}, s), do: done(from, k, s)
 `Jev.Nx.Model` is the contract for the next one: encode a question into a
 marked token sequence, batch, run, and read a distribution per question out of
 the outputs. `Jev.Nx.Serving` does the padding, batching, and compilation for
-every model that implements it.
+every model that implements it, and `Jev.Nx.Defn` implements the per-shape
+step for a model that runs on `Nx.Defn`.
+
+## Runtimes
+
+Laya runs two ways. `runtime: :bumblebee`, the default, builds the encoder as
+an Axon graph and the head in `Nx.Defn`, so it goes wherever Nx goes.
+`runtime: :onnx` loads the [published export](https://huggingface.co/receptron/laya-onnx)
+into an ONNX Runtime session, for a deployment with no Nx compiler.
+
+On an Apple M5, servings warm, medians from `mix run bench/runtimes.exs`
+(Benchee, 10 seconds per runtime) and deviations from
+`mix run bench/accuracy.exs`:
+
+| Runtime | 1 question | 3 questions | largest difference from the reference |
+| --- | --- | --- | --- |
+| `:bumblebee` + EMLX on Metal | 28.9 ms | 70.5 ms | 6.3e-3 |
+| `:onnx` on CPU | 107.3 ms | 326.2 ms | 4.0e-6 |
+| `:bumblebee` + EXLA on CPU | 214.0 ms | 628.0 ms | 3.0e-6 |
+
+Metal is worth the jump, and its arithmetic is looser: probabilities move in
+the third decimal, enough to matter for a threshold sitting exactly on a
+boundary, not enough to change any label in the golden cases.
+
+**The ONNX runtime does not work with `:onnxruntime` 0.1.0.** Laya's graph
+declares a boolean `marker_mask`, Nx has no boolean type, and the binding maps
+`u8` to `UINT8` only, so the session refuses the input. The fix belongs in the
+binding, which knows the type the graph expects; until it lands, use the
+default runtime.
 
 ## Installation
 

@@ -11,12 +11,31 @@ defmodule Jev.Nx.Laya do
 
       serving = Jev.Nx.serving(Jev.Nx.Laya, checkpoint: :english)
 
+  ## Runtimes
+
+  `runtime: :bumblebee`, the default, builds the encoder as an Axon graph and
+  runs the head as `Nx.Defn`, so it goes wherever Nx goes: EXLA on CPU or
+  CUDA, EMLX or Emily for Metal. `runtime: :onnx` loads the
+  [published export](https://huggingface.co/receptron/laya-onnx) into an ONNX
+  Runtime session instead, for a deployment with no Nx compiler. Both share
+  the sequence layout, the calibration, and the decoding, and both are
+  verified against the reference implementation.
+
+  The ONNX runtime needs a binding that accepts an Nx `u8` tensor where the
+  graph declares `BOOL`, because Laya's marker mask is boolean and Nx has no
+  boolean type. `:onnxruntime` 0.1.0 does not, and this module says so rather
+  than failing inside the NIF.
+
   ## Options
 
-    * `:checkpoint` - `:english` (default), `:multilingual`, or `:typed_decisions`
-    * `:repository` - a Bumblebee repository, default `{:hf, "convaiinnovations/laya"}`;
-      `{:local, dir}` for a downloaded copy
-    * `:type` - encoder parameter type, such as `:bf16`; default the checkpoint's
+    * `:runtime` - `:bumblebee` (default) or `:onnx`
+    * `:checkpoint` - `:english` (default), `:multilingual`, or `:typed_decisions`;
+      the ONNX export covers `:english` only
+    * `:repository` - a Bumblebee repository, defaulting to the runtime's own:
+      `{:hf, "convaiinnovations/laya"}` or `{:hf, "receptron/laya-onnx"}`.
+      `{:local, dir}` is a copy on disk
+    * `:type` - encoder parameter type, such as `:bf16`; default the
+      checkpoint's, and ignored by the ONNX runtime
 
   ## What comes back
 

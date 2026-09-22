@@ -43,7 +43,10 @@ defmodule Jev.Nx.MixProject do
       {:jev, "~> 0.2.0"},
       {:bumblebee, "~> 0.7.1"},
       {:nx, "~> 0.12 or ~> 0.13"},
+      {:onnxruntime, "~> 0.1.0", optional: true},
       {:exla, ">= 0.0.0", only: [:dev, :test]},
+      {:emlx, "~> 0.4", only: [:dev, :test]},
+      {:benchee, "~> 1.5", only: [:dev, :test]},
       {:plug, "~> 1.14", only: :test},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false},
@@ -70,8 +73,9 @@ defmodule Jev.Nx.MixProject do
       source_url: @source_url,
       source_ref: "v#{@version}",
       extras: ["README.md", "CHANGELOG.md", "LICENSE", "NOTICE"],
+      skip_undefined_reference_warnings_on: ["CHANGELOG.md"],
       groups_for_modules: [
-        Backend: [Jev.Nx, Jev.Nx.Model, Jev.Nx.Serving],
+        Backend: [Jev.Nx, Jev.Nx.Model, Jev.Nx.Serving, Jev.Nx.Defn],
         Laya: [Jev.Nx.Laya, Jev.Nx.Laya.Sequence, Jev.Nx.Laya.Head]
       ]
     ]
