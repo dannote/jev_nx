@@ -72,9 +72,13 @@ defmodule Jev.Nx.Laya do
          head_params: head_params,
          config: config
        }}
+    else
+      {:error, reason} when is_exception(reason) ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, %ArgumentError{message: "could not load Laya: #{inspect(reason)}"}}
     end
-  rescue
-    exception -> {:error, exception}
   end
 
   @impl Jev.Nx.Model
@@ -239,9 +243,8 @@ defmodule Jev.Nx.Laya do
   end
 
   defp head_params(repository, subdir) do
-    with {:ok, path} <- file(repository, [subdir, "model.safetensors"]) do
-      tensors = Safetensors.read!(path, lazy: true)
-
+    with {:ok, path} <- file(repository, [subdir, "model.safetensors"]),
+         {:ok, tensors} <- safetensors(path) do
       pair = fn prefix ->
         %{
           weight: tensor!(tensors, prefix <> ".weight"),
@@ -274,6 +277,12 @@ defmodule Jev.Nx.Laya do
 
       {:ok, Nx.backend_transfer(params, Nx.default_backend())}
     end
+  end
+
+  defp safetensors(path) do
+    {:ok, Safetensors.read!(path, lazy: true)}
+  rescue
+    error in [File.Error, ArgumentError] -> {:error, error}
   end
 
   defp tensor!(tensors, name) do
