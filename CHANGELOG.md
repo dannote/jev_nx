@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.0 (2026-09-22)
+
+### Changed
+
+- `Jev.Nx.Model` replaces the `params/1`, `forward/1`, and `template/4` callbacks with one
+  `init/4`, which mirrors `Nx.Serving`'s own init: given a batch shape, return the function that
+  runs it. A model on `Nx.Defn` implements it with the new `Jev.Nx.Defn.runner/3`, which keeps the
+  compile-or-jit and preallocation logic; a model on another runtime returns its own function.
+  This is what lets one model expose two runtimes.
+
+### Added
+
+- `Jev.Nx.Laya` takes `runtime: :onnx`, which loads the published ONNX export instead of building
+  the encoder with Bumblebee. It needs an ONNX Runtime binding that accepts an Nx `u8` tensor
+  where the graph declares `BOOL`; `:onnxruntime` 0.1.0 does not, and says so clearly.
+- `Jev.Nx.Model.inputs/1` materializes a batch for a runtime that is not `Nx.Defn`.
+- `bench/runtimes.exs`, a Benchee comparison of the runtimes, and `bench/accuracy.exs`, their
+  largest deviation from the Python reference.
+
 ## 0.1.1 (2026-09-22)
 
 - `preallocate_params: true` copied the parameters to the backend once per batch key, eighteen
