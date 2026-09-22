@@ -23,10 +23,10 @@ defmodule Jev.Nx.Model do
 
   ## Shapes
 
-  `c:batch/4` pads items to a `sequence_length` and a number of
-  `option_slots`, and `c:template/4` describes the same tensors for ahead-of-time
-  compilation. Both come from the serving's bucket options. The same shapes
-  reach `c:forward/1` however the batch was assembled.
+  `c:batch/4` pads items to a sequence length and a number of option slots,
+  both from the serving's bucket options, and `c:init/4` prepares one function
+  per shape. A model that runs on `Nx.Defn` implements `c:init/4` with
+  `Jev.Nx.Defn.runner/3`; anything else returns its own function.
   """
 
   @type model :: struct()
@@ -40,6 +40,9 @@ defmodule Jev.Nx.Model do
 
   @typedoc "Named input tensors, as an Axon model takes them."
   @type inputs :: %{String.t() => Nx.Tensor.t()}
+
+  @typedoc "A padded batch shape: tokens per sequence and option slots per question."
+  @type shape :: {:shape, pos_integer(), pos_integer()}
 
   @doc "Loads a model. Options are the model's own, such as a checkpoint name."
   @callback load(keyword()) :: {:ok, model()} | {:error, Exception.t()}
@@ -56,15 +59,35 @@ defmodule Jev.Nx.Model do
   @doc "Pads items into input tensors of the given sequence length and option slots."
   @callback batch(model(), [item()], pos_integer(), pos_integer()) :: inputs()
 
-  @doc "Input templates for `batch_size` items of the given shape, for compilation."
-  @callback template(model(), pos_integer(), pos_integer(), pos_integer()) :: inputs()
+  @doc """
+  Prepares the model to run one batch shape.
 
-  @doc "The parameters `c:forward/1` takes, as one term the serving can move to a backend."
-  @callback params(model()) :: Nx.Container.t()
+  Called in the serving process once per shape when it starts, and mirrors
+  `Nx.Serving`'s own init: given the shape and the `defn_options` the serving
+  was built with, return a function from input tensors to outputs. A model on
+  `Nx.Defn` compiles or jits here, which `Jev.Nx.Defn.runner/3` does for it; a
+  model on another runtime, such as an ONNX session, returns a function that
+  calls it.
 
-  @doc "The network as a function of parameters and inputs, suitable for `Nx.Defn.jit/2`."
-  @callback forward(model()) :: (Nx.Container.t(), inputs() -> Nx.Container.t())
+  The function receives an `Nx.Batch`, which a jitted function takes directly.
+  A runtime that needs the tensors themselves calls `inputs/1` on it.
+
+  `batch_size` is the serving's maximum, or `nil` when it has none. Inputs
+  arrive with exactly that many rows only when the serving pads them.
+  """
+  @callback init(model(), shape(), batch_size :: pos_integer() | nil, defn_options :: keyword()) ::
+              (Nx.Batch.t() -> Nx.Container.t())
 
   @doc "Reads one `Jev.Wire.Answer` per item out of the batch outputs, in item order."
   @callback decode(model(), [item()], Nx.Container.t()) :: [Jev.Wire.Answer.t()]
+
+  @doc """
+  The input tensors of a batch, for a runtime that is not `Nx.Defn`.
+
+  A batch is a description of tensors to stack, concatenate, and pad, which
+  the compiler would otherwise fuse into the computation. This materializes
+  it, so the tensors exist before the model runs.
+  """
+  @spec inputs(Nx.Batch.t()) :: inputs()
+  def inputs(%Nx.Batch{} = batch), do: Nx.Defn.jit_apply(&Function.identity/1, [batch])
 end

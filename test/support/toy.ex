@@ -39,21 +39,24 @@ defmodule Jev.Nx.Toy do
   end
 
   @impl true
-  def template(_model, batch_size, _length, slots) do
-    %{
-      "logits" => Nx.template({batch_size, slots}, :f32),
-      "length" => Nx.template({batch_size}, :s32)
-    }
-  end
+  def init(_model, {:shape, _length, slots}, batch_size, defn_options) do
+    template =
+      if batch_size,
+        do: %{
+          "logits" => Nx.template({batch_size, slots}, :f32),
+          "length" => Nx.template({batch_size}, :s32)
+        }
 
-  @impl true
-  def params(_model), do: %{scale: Nx.tensor(1.0)}
-
-  @impl true
-  def forward(_model),
-    do: fn params, inputs ->
+    forward = fn params, inputs ->
       %{logits: Nx.multiply(inputs["logits"], params.scale), length: inputs["length"]}
     end
+
+    Jev.Nx.Defn.runner(
+      fn -> %{scale: Nx.tensor(1.0)} end,
+      forward,
+      Keyword.put(defn_options, :template, template)
+    )
+  end
 
   @impl true
   def decode(_model, items, outputs) do

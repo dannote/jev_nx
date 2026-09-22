@@ -87,39 +87,17 @@ defmodule Jev.Nx.Serving do
   end
 
   # Nx.Serving calls this in the serving process once per batch key at start.
-  # Parameters are moved to the compiler's backend once, on the first key, and
-  # shared by every key's program. Batches are padded to the batch size only
-  # when the programs were compiled for it.
-  defp runner(model, {:shape, length, slot}, defn_options, batch_size, opts) do
-    params = params(model, opts[:preallocate_params], defn_options)
-    forward = compile(model, batch_size, length, slot, opts[:compile], defn_options)
+  # What the model returns is what runs the batch; padding to the batch size
+  # happens only when the programs were compiled for it.
+  defp runner(%module{} = model, shape, defn_options, batch_size, opts) do
+    defn_options = Keyword.put(defn_options, :preallocate_params, opts[:preallocate_params])
+    batch_size = if opts[:compile], do: batch_size
+    run = module.init(model, shape, batch_size, defn_options)
 
     fn batch ->
-      batch = if opts[:compile], do: Nx.Batch.pad(batch, batch_size - batch.size), else: batch
-      forward.(params, batch) |> Nx.backend_transfer(Nx.BinaryBackend)
+      batch = if batch_size, do: Nx.Batch.pad(batch, batch_size - batch.size), else: batch
+      batch |> run.() |> Nx.backend_transfer(Nx.BinaryBackend)
     end
-  end
-
-  defp params(%module{} = model, false, _defn_options), do: module.params(model)
-
-  defp params(%module{} = model, true, defn_options) do
-    key = {__MODULE__, :params, defn_options}
-
-    with nil <- Process.get(key) do
-      params = Nx.backend_copy(module.params(model), Nx.Defn.to_backend(defn_options))
-      Process.put(key, params)
-      params
-    end
-  end
-
-  defp compile(%module{} = model, batch_size, length, slot, true, defn_options) do
-    template = module.template(model, batch_size, length, slot)
-    params = Nx.Defn.Composite.traverse(module.params(model), &Nx.to_template/1)
-    Nx.Defn.compile(module.forward(model), [params, template], defn_options)
-  end
-
-  defp compile(%module{} = model, _batch_size, _length, _slot, false, defn_options) do
-    Nx.Defn.jit(module.forward(model), defn_options)
   end
 
   # Runs in the caller's process. Tensors are built on the binary backend so

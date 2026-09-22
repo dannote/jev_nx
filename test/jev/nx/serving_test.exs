@@ -88,7 +88,7 @@ defmodule Jev.Nx.ServingTest do
 
     pid = Process.whereis(__MODULE__.Prealloc)
     {:dictionary, dictionary} = Process.info(pid, :dictionary)
-    assert [_one] = for({{Serving, :params, _}, _} <- dictionary, do: :copy)
+    assert [_one] = for({{Jev.Nx.Defn, _}, _} <- dictionary, do: :copy)
   end
 
   test "compile: true pads every batch to the batch size" do

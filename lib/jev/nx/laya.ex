@@ -38,38 +38,55 @@ defmodule Jev.Nx.Laya do
   alias Jev.Wire
 
   @repository {:hf, "convaiinnovations/laya"}
+  @onnx_repository {:hf, "receptron/laya-onnx"}
   @checkpoints %{english: "", multilingual: "multilingual", typed_decisions: "typed-decisions"}
 
-  defstruct [:checkpoint, :encoder, :encoder_params, :encode, :special, :head_params, :config]
+  defstruct [:checkpoint, :runtime, :encode, :special, :config]
 
   @type t :: %__MODULE__{}
 
+  defmodule Graph do
+    @moduledoc false
+    # Encoder and head as an Axon graph and Nx.Defn, run by the configured compiler.
+    defstruct [:model, :params, :head_params]
+  end
+
+  defmodule Session do
+    @moduledoc false
+    # The whole model as one exported graph, run by ONNX Runtime on the CPU.
+    defstruct [:session]
+  end
+
   @impl Jev.Nx.Model
   def load(opts \\ []) do
-    opts = Keyword.validate!(opts, checkpoint: :english, repository: @repository, type: nil)
+    opts =
+      Keyword.validate!(opts, [:repository, :type, checkpoint: :english, runtime: :bumblebee])
+
     checkpoint = opts[:checkpoint]
 
     subdir =
       Map.get(@checkpoints, checkpoint) ||
         raise ArgumentError, "unknown checkpoint #{inspect(checkpoint)}"
 
-    repository = opts[:repository]
+    runtime = opts[:runtime]
+    repository = opts[:repository] || default_repository(runtime)
 
-    with {:ok, config} <- config(repository, subdir),
-         {:ok, spec} <- Bumblebee.load_spec(at(repository, [subdir, "encoder"])),
-         spec = Bumblebee.configure(spec, architecture: :base),
-         {:ok, encoder} <- encoder(repository, subdir, spec, opts[:type]),
+    if runtime == :onnx and checkpoint != :english do
+      raise ArgumentError, "the ONNX export covers the :english checkpoint only"
+    end
+
+    subdir = if runtime == :onnx, do: "", else: subdir
+
+    with {:ok, config} <- config(repository, subdir, runtime),
          {:ok, tokenizer} <-
            Bumblebee.load_tokenizer(at(repository, [subdir, "tokenizer"]), type: :modernbert),
-         {:ok, head_params} <- head_params(repository, subdir) do
+         {:ok, runtime} <- runtime(runtime, repository, subdir, opts[:type]) do
       {:ok,
        %__MODULE__{
          checkpoint: checkpoint,
-         encoder: encoder.model,
-         encoder_params: encoder.params,
+         runtime: runtime,
          encode: Sequence.encoder(tokenizer),
          special: Sequence.special(tokenizer),
-         head_params: head_params,
          config: config
        }}
     else
@@ -78,6 +95,29 @@ defmodule Jev.Nx.Laya do
 
       {:error, reason} ->
         {:error, %ArgumentError{message: "could not load Laya: #{inspect(reason)}"}}
+    end
+  end
+
+  defp default_repository(:bumblebee), do: @repository
+  defp default_repository(:onnx), do: @onnx_repository
+
+  defp runtime(:bumblebee, repository, subdir, type) do
+    with {:ok, spec} <- Bumblebee.load_spec(at(repository, [subdir, "encoder"])),
+         spec = Bumblebee.configure(spec, architecture: :base),
+         {:ok, encoder} <- encoder(repository, subdir, spec, type),
+         {:ok, head_params} <- head_params(repository, subdir) do
+      {:ok, %Graph{model: encoder.model, params: encoder.params, head_params: head_params}}
+    end
+  end
+
+  defp runtime(:onnx, repository, subdir, _type) do
+    Code.ensure_loaded?(OnnxRuntime) ||
+      raise ArgumentError, "runtime: :onnx needs the :onnxruntime dependency"
+
+    # The graph names an external data file beside it, which the session reads.
+    with {:ok, _data} <- file(repository, [subdir, "laya.onnx.data"]),
+         {:ok, path} <- file(repository, [subdir, "laya.onnx"]) do
+      {:ok, %Session{session: OnnxRuntime.load(path)}}
     end
   end
 
@@ -107,15 +147,28 @@ defmodule Jev.Nx.Laya do
   end
 
   @impl Jev.Nx.Model
-  def batch(%__MODULE__{special: %{pad: pad}}, items, length, slots) do
+  def batch(%__MODULE__{runtime: %Graph{}, special: %{pad: pad}}, items, length, slots) do
     %{
       "input_ids" => tensor(items, & &1.ids, length, pad, :u32),
-      "attention_mask" => tensor(items, &List.duplicate(1, length(&1.ids)), length, 0, :u32),
+      "attention_mask" => tensor(items, &ones(&1.ids), length, 0, :u32),
       "marker_pos" => tensor(items, & &1.markers, slots, 0, :s32),
-      "marker_mask" => tensor(items, &List.duplicate(1, length(&1.markers)), slots, 0, :u8),
+      "marker_mask" => tensor(items, &ones(&1.markers), slots, 0, :u8),
       "qtype" => Nx.tensor(Enum.map(items, & &1.qtype), type: :s32)
     }
   end
+
+  # The exported graph declares int64 everywhere and a boolean marker mask.
+  def batch(%__MODULE__{runtime: %Session{}, special: %{pad: pad}}, items, length, slots) do
+    %{
+      "input_ids" => tensor(items, & &1.ids, length, pad, :s64),
+      "attention_mask" => tensor(items, &ones(&1.ids), length, 0, :s64),
+      "marker_pos" => tensor(items, & &1.markers, slots, 0, :s64),
+      "marker_mask" => tensor(items, &ones(&1.markers), slots, 0, :u8) |> Nx.equal(1),
+      "qtype" => Nx.tensor(Enum.map(items, & &1.qtype), type: :s64)
+    }
+  end
+
+  defp ones(list), do: List.duplicate(1, length(list))
 
   defp tensor(items, fun, width, fill, type) do
     items
@@ -126,7 +179,57 @@ defmodule Jev.Nx.Laya do
   end
 
   @impl Jev.Nx.Model
-  def template(%__MODULE__{}, batch_size, length, slots) do
+  def init(
+        %__MODULE__{runtime: %Graph{} = graph},
+        {:shape, length, slots},
+        batch_size,
+        defn_options
+      ) do
+    defn_options =
+      if batch_size,
+        do: Keyword.put(defn_options, :template, template(batch_size, length, slots)),
+        else: defn_options
+
+    Jev.Nx.Defn.runner(fn -> params(graph) end, forward(graph), defn_options)
+  end
+
+  def init(%__MODULE__{runtime: %Session{session: session}}, _shape, _batch_size, _defn_options) do
+    fn batch ->
+      inputs = Jev.Nx.Model.inputs(batch)
+
+      {logits, _act_probs} =
+        run(session, {
+          inputs["input_ids"],
+          inputs["attention_mask"],
+          inputs["marker_pos"],
+          inputs["marker_mask"],
+          inputs["qtype"]
+        })
+
+      logits
+    end
+  end
+
+  # The graph declares a boolean marker mask, and Nx has no boolean type, so
+  # the mask goes as u8. A binding that does not reconcile the two fails
+  # inside the NIF with nothing to go on.
+  defp run(session, inputs) do
+    OnnxRuntime.run(session, inputs)
+  rescue
+    error in RuntimeError ->
+      reraise """
+              #{Exception.message(error)}
+
+              Laya's exported graph takes a boolean marker_mask, which needs an
+              ONNX Runtime binding that accepts an Nx u8 tensor where the graph
+              declares BOOL. :onnxruntime 0.1.0 does not, and no Nx type maps to
+              BOOL, so this runtime cannot be used with it. Use the default
+              runtime: :bumblebee until the binding supports it.\
+              """,
+              __STACKTRACE__
+  end
+
+  defp template(batch_size, length, slots) do
     %{
       "input_ids" => Nx.template({batch_size, length}, :u32),
       "attention_mask" => Nx.template({batch_size, length}, :u32),
@@ -136,13 +239,10 @@ defmodule Jev.Nx.Laya do
     }
   end
 
-  @impl Jev.Nx.Model
-  def params(%__MODULE__{encoder_params: encoder, head_params: head}),
-    do: %{encoder: encoder, head: head}
+  defp params(%Graph{params: params, head_params: head}), do: %{encoder: params, head: head}
 
-  @impl Jev.Nx.Model
-  def forward(%__MODULE__{encoder: encoder}) do
-    {_init, predict} = Axon.build(encoder)
+  defp forward(%Graph{model: model}) do
+    {_init, predict} = Axon.build(model)
 
     fn params, inputs ->
       encoder_inputs = Map.take(inputs, ["input_ids", "attention_mask"])
@@ -216,8 +316,12 @@ defmodule Jev.Nx.Laya do
 
   # Loading
 
-  defp config(repository, subdir) do
-    with {:ok, path} <- file(repository, [subdir, "rl_agent_config.json"]),
+  # The checkpoint ships the training config; the ONNX export ships only the
+  # inference parts of it, under its own name.
+  defp config(repository, subdir, runtime) do
+    filename = if runtime == :onnx, do: "laya_config.json", else: "rl_agent_config.json"
+
+    with {:ok, path} <- file(repository, [subdir, filename]),
          {:ok, json} <- File.read(path) do
       JSON.decode(json)
     end
