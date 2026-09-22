@@ -61,7 +61,9 @@ config :nx, :default_defn_options, compiler: EXLA
 This package does not choose an Nx backend. Parameters load onto
 `Nx.default_backend/0`, and the serving compiles with `Nx.Defn.default_options/0`
 unless given `defn_options`. The checkpoint downloads from the Hub on first
-load; pass `repository: {:local, dir}` for a copy on disk.
+load, and `Jev.Nx.serving/3` loads it in the calling process, so in a child
+spec the application waits for it; pass `repository: {:local, dir}` for a copy
+on disk.
 
 ## Shapes and batching
 
