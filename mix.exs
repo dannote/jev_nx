@@ -45,7 +45,6 @@ defmodule Jev.Nx.MixProject do
       {:nx, "~> 0.12 or ~> 0.13"},
       {:onnxruntime, "~> 0.1.0", optional: true},
       {:exla, ">= 0.0.0", only: [:dev, :test]},
-      {:emlx, "~> 0.4", only: [:dev, :test]},
       {:benchee, "~> 1.5", only: [:dev, :test]},
       {:plug, "~> 1.14", only: :test},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
@@ -56,7 +55,17 @@ defmodule Jev.Nx.MixProject do
       {:credo, "~> 1.0", only: [:dev, :test], runtime: false},
       {:vibe_kit, "~> 0.1", only: [:dev, :test], runtime: false},
       {:igniter, "~> 0.6", only: [:dev, :test]}
-    ]
+    ] ++ metal_deps()
+  end
+
+  # EMLX is the Metal backend, and its application does not start elsewhere.
+  # The benchmarks pick it up when it is there.
+  defp metal_deps do
+    if :os.type() == {:unix, :darwin} do
+      [{:emlx, "~> 0.4", only: [:dev, :test]}]
+    else
+      []
+    end
   end
 
   defp package do
