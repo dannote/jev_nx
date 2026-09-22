@@ -17,3 +17,30 @@ jobs:
       latest-otp: "29"
       min-elixir: "1.18"
       min-otp: "27"
+
+  # EMLX is a macOS dependency, so only a macOS runner builds and exercises it.
+  macos:
+    name: macOS / Metal
+    runs-on: macos-latest
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: elixir-vibe/actions/setup-elixir@v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+          restore-plt-cache: "false"
+
+      - name: Test
+        run: mix test
+
+      - name: Metal through EMLX
+        run: |
+          mix run -e '
+            Nx.default_backend({EMLX.Backend, device: :gpu})
+            sum = Nx.add(Nx.tensor([1.0, 2.0]), Nx.tensor([3.0, 4.0])) |> Nx.to_flat_list()
+            ^sum = [4.0, 6.0]
+            IO.puts("Metal ok: #{inspect(sum)}")
+          '
