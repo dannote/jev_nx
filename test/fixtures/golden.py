@@ -1,6 +1,38 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["torch", "numpy", "transformers", "safetensors", "huggingface-hub"]
+# ///
+"""Records what Laya's own implementation answers, as test/fixtures/laya_golden.json.
+
+Laya ships its reference implementation in PyTorch, inside the checkpoint
+repository. It is the oracle for Jev.Nx.Laya: the Elixir port has to produce the
+same token sequences and the same probabilities, so this runs the reference and
+writes down what it said. Without it the fixture would be numbers nobody can
+check. Nothing in the Elixir test suite runs this, and it is not in the package.
+
+    uv run test/fixtures/golden.py
+
+It downloads the English checkpoint to ~/.cache/jev_nx/laya on first use, or
+reads JEV_NX_LAYA_DIR. Rerun it when the checkpoint or the cases change, and
+commit the JSON alongside.
+"""
+
 import json, os, sys
 import numpy as np, torch
-d = os.path.expanduser("~/.cache/jev_nx/laya")
+from huggingface_hub import snapshot_download
+
+d = os.environ.get("JEV_NX_LAYA_DIR") or os.path.expanduser("~/.cache/jev_nx/laya")
+
+if not os.path.exists(os.path.join(d, "model.safetensors")):
+    print(f"downloading convaiinnovations/laya to {d}", file=sys.stderr)
+    snapshot_download(
+        "convaiinnovations/laya",
+        local_dir=d,
+        allow_patterns=["model.safetensors", "rl_agent_config.json", "rl_common.py",
+                        "rl_agent_api.py", "encoder/*", "tokenizer/*"],
+    )
+
+# The reference implementation lives in the checkpoint, next to the weights.
 sys.path.insert(0, d)
 from rl_common import QTYPES, build_sequence, collate_items, render_options, temp_bucket
 from rl_agent_api import RLAgent

@@ -116,5 +116,7 @@ mix test                          # without the checkpoint
 mix test --include model          # with it in ~/.cache/jev_nx/laya, or JEV_NX_LAYA_DIR
 ```
 
-`test/fixtures/golden.py` records the reference implementation's sequences
-and answers for the golden cases.
+`test/fixtures/golden.py` records the reference implementation's sequences and
+answers for the golden cases. Laya's reference is PyTorch, so it is a Python
+script; `uv run test/fixtures/golden.py` installs what it needs and fetches the
+checkpoint. See `test/fixtures/README.md`.
